@@ -411,6 +411,7 @@ void MD::deformation(int seed,std::ofstream& ofs, int& check){
     auto& S = f_breaking_private[omp_get_thread_num()];
     auto segs = split_into_segments_periodic(S, N);  
     double step=0;
+    ///一体のみ　単純なもの
     for (auto &seg : segs){
         int i=seg[0];
         double h=((lat->fiber)[i].pinned_position - (lat->fiber)[i].z) ;
@@ -436,7 +437,206 @@ void MD::deformation(int seed,std::ofstream& ofs, int& check){
         }
         n_break += step;
     }
-}        
+    ///
+            for (auto &seg : segs){
+            if(seg.size()==1){
+                int i=seg[0];
+                double h=abs((lat->fiber)[i].pinned_position - (lat->fiber)[i].z) ;
+                double d = 0.0;
+                double step=0;
+                d = Distance1(h, i,step);     
+                
+                (lat->fiber)[i].z+=d;
+                (lat->fiber)[i].f-=C1*d;
+                (lat->fiber)[((i+1)%N)].f+=C2*d;        
+                (lat->fiber)[((i-1)%N+N)%N].f+=C2*d;
+
+                //////Judgeing for pin->unpin or unpin->pin or unpin, and renewing fracture energy 
+                if((lat->fiber)[i].pin==true){
+                    if ((lat->fiber)[i].pinned_position==(lat->fiber)[i].z){ //進展した結果、ピン止めされている
+                        (lat->fiber)[i].threshold=get_rand_range(seed,0,G);
+                        (lat->fiber)[i].pin=true;
+                        (lat->fiber)[i].pinned_position=std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+exponential_dist(seed, 1/D);
+                    }
+                    else{
+                        (lat->fiber)[i].threshold=0;
+                        (lat->fiber)[i].pin=false;
+                    }
+                }
+                else{
+                    if ((lat->fiber)[i].pinned_position-(lat->fiber)[i].z<1e-3){//ピン止め一の周辺にいる
+                        (lat->fiber)[i].pin=true;
+                        (lat->fiber)[i].threshold=get_rand_range(seed,0,G);
+                        (lat->fiber)[i].pinned_position=std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+exponential_dist(seed,1/D);
+                    }
+                    else{
+                        (lat->fiber)[i].threshold=0;
+                        (lat->fiber)[i].pin=false;
+                    }
+                }
+                n_break += step;
+            }
+            else if(seg.size()==2){
+                double h1=abs((lat->fiber)[seg[0]].pinned_position - (lat->fiber)[seg[0]].z) ;
+                double h2=abs((lat->fiber)[seg[1]].pinned_position - (lat->fiber)[seg[1]].z) ;
+                double d1 = Distance2l(h1,seg[0],step);     
+                double d2 = Distance2r(h2,seg[1],step);
+                
+                if (h1==d1 && h2==d2){
+                    // 何もしない
+                }
+                else if (h1!=d1 && h2!= d2){
+                    // 何もしない
+                }
+                else if (h1!=d1){
+                    d1=Distance1(h1,seg[0],step);
+                }
+                else if (h2!=d2){
+                    d1=Distance1(h2,seg[1],step);
+                }
+                //// 決定した進展距離に基づく処理
+                for (auto &i : seg){
+                    double d;
+                    if (i==0){
+                        d=d1;
+                    }
+                    else{
+                        d=d2;
+                    }
+                    (lat->fiber)[i].z+=d;
+                    (lat->fiber)[i].f-=C1*d;
+                    (lat->fiber)[((i+1)%N)].f+=C2*d;        
+                    (lat->fiber)[((i-1)%N+N)%N].f+=C2*d;
+
+                    if((lat->fiber)[i].pin==true){
+                        if ((lat->fiber)[i].pinned_position-(lat->fiber)[i].z<1e-4){ //進展した結果、ピン止めされている
+                            (lat->fiber)[i].threshold=get_rand_range(seed,0,G);
+                            (lat->fiber)[i].pin=true;
+                            (lat->fiber)[i].pinned_position=std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+exponential_dist(seed, 1/D);
+                        }
+                        else{
+                            (lat->fiber)[i].threshold=0;
+                            (lat->fiber)[i].pin=false;
+                        }
+                    }
+                    else{
+                        if ((lat->fiber)[i].pinned_position-(lat->fiber)[i].z<1e-3 || (lat->fiber)[i].pinned_position<(lat->fiber)[i].z){//ピン止め一の周辺にいる
+                            (lat->fiber)[i].pin=true;
+                            (lat->fiber)[i].threshold=get_rand_range(seed,0,G);
+                            (lat->fiber)[i].pinned_position=std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+exponential_dist(seed,1/D);
+                        }
+                        else{
+                            (lat->fiber)[i].threshold=0;
+                            (lat->fiber)[i].pin=false;
+                        }
+                    }
+                    n_break += step;
+                }
+            }
+            else {
+                int L = seg.size();
+                std::vector<double> d_seq = d_seq_solver(seg);
+                std::unordered_set<int> S_split; 
+                for (int j = 0; j < L; ++j) {
+                    int i = seg[j];
+                    double h_pin = ((lat->fiber)[i].pinned_position - (lat->fiber)[i].z);
+                    if (h_pin<0){
+                        cout<<"error"<<endl;
+                    }
+                    double d = d_seq[j];
+                    
+                    // まずは単純に min(平衡進展距離, pin距離) を採用
+                    if (d > h_pin){
+                        d = h_pin;
+                        (lat->fiber)[i].z += d;
+                        (lat->fiber)[i].f -= C1 * d;
+                        (lat->fiber)[((i + 1) % N)].f += C2 * d;
+                        (lat->fiber)[((i - 1 + N) % N)].f += C2 * d;
+                        n_break += d;
+                    }
+                    else{
+                        S_split.insert(i);
+                    }
+                }
+                if (S_split.size()!=0){
+                    auto re_segs = split_into_segments_periodic(S_split, N);
+                    for (auto &re_seg : re_segs){
+                        if(re_seg.size()==1){
+                            int i=re_seg[0];
+                            double h=abs((lat->fiber)[i].pinned_position - (lat->fiber)[i].z) ;
+                            double d = 0.0;
+                            double step=0;
+                            d = Distance1(h, i,step);     
+                            (lat->fiber)[i].z+=d;
+                            (lat->fiber)[i].f-=C1*d;
+                            (lat->fiber)[((i+1)%N)].f+=C2*d;        
+                            (lat->fiber)[((i-1)%N+N)%N].f+=C2*d;
+                        }    
+                        else if(re_seg.size()==2){
+                            double h1=abs((lat->fiber)[re_seg[0]].pinned_position - (lat->fiber)[re_seg[0]].z) ;
+                            double h2=abs((lat->fiber)[re_seg[1]].pinned_position - (lat->fiber)[re_seg[1]].z) ;
+                            double d1 = Distance2l(h1,re_seg[0],step);     
+                            double d2 = Distance2r(h1,re_seg[1],step);
+                            //// 決定した進展距離に基づく処理
+                            for (int j=0;j<2;j++){
+                                int i=re_seg[j];
+                                double d=(j==0 ?d1:d2 );
+                                (lat->fiber)[i].z+=d;
+                                (lat->fiber)[i].f-=C1*d;
+                                (lat->fiber)[((i+1)%N)].f+=C2*d;        
+                                (lat->fiber)[((i-1)%N+N)%N].f+=C2*d;
+                            }
+                        }
+                        else{
+                            int LL = re_seg.size();
+                            std::vector<double> d_seq2 = d_seq_solver(re_seg);
+                            std::unordered_set<int> S_split2;
+
+                            for (int j = 0; j < LL; ++j) {
+                                int i = re_seg[j];
+                                double h_pin = (lat->fiber)[i].pinned_position - (lat->fiber)[i].z;
+                                double d = d_seq2[j];
+
+                                // pin位置の方が先なら、pinで止める
+                                
+                                (lat->fiber)[i].z += d;
+                                (lat->fiber)[i].f -= C1 * d;
+                                (lat->fiber)[((i + 1) % N)].f += C2 * d;
+                                (lat->fiber)[((i - 1 + N) % N)].f += C2 * d;
+                                n_break += d;
+                            }
+                        }
+                    }
+                }
+                for (int j = 0; j < L; ++j){ /////pin状態の更新
+                    int i = seg[j];
+                    if ((lat->fiber)[i].pin == true) {
+                        if (std::abs((lat->fiber)[i].pinned_position - (lat->fiber)[i].z)<1e-3) {
+                            (lat->fiber)[i].threshold = get_rand_range(seed, 0, G);
+                            (lat->fiber)[i].pin = true;
+                            (lat->fiber)[i].pinned_position =std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+ exponential_dist(seed, 1);
+                        }
+                        else {
+                            (lat->fiber)[i].threshold = 0;
+                            (lat->fiber)[i].pin = false;
+                        }
+                    }
+                    else {
+                        if (((lat->fiber)[i].pinned_position - (lat->fiber)[i].z < 1e-3) || ((lat->fiber)[i].pinned_position < (lat->fiber)[i].z) ) {
+                            (lat->fiber)[i].pin = true;
+                            (lat->fiber)[i].threshold = get_rand_range(seed, 0, G);
+                            (lat->fiber)[i].pinned_position =std::max((lat->fiber)[i].z,(lat->fiber)[i].pinned_position)+ exponential_dist(seed, 1);
+                        }
+                        else {
+                            (lat->fiber)[i].threshold = 0;
+                            (lat->fiber)[i].pin = false;
+                        }
+                    }
+                }
+            }
+    
+        }
+    }        
 
 
 /*
